@@ -1,15 +1,17 @@
 import asyncio
+import os 
 from loguru import logger
 from pydantic import BaseModel, Field
-from typing import List
-from langchain_openai import ChatOpenAI
-from langchain_community.utilities import GoogleSerperAPIWrapper
-from langchain_community.document_loaders.firecrawl import FireCrawlLoader
-from langchain_core.tools import tool
+from typing import List,Optional
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+from langchain_community.utilities import GoogleSerperAPIWrapper
+from firecrawl.firecrawl import FirecrawlApp
 
 load_dotenv()
+
+firecrawl = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
 
 model = ChatOpenAI(model="gpt-4o")
 query = "how to walk a dog"
@@ -172,63 +174,67 @@ class SERPCommonalitiesResponse(BaseModel):
         
         return md
 
-@tool
 def get_serper_serp(query: str):
-    """Use this to get the SERP for a search query."""
+    """Serper API tool to get the SERP for a search query."""
+    logger.info(f"Getting SERP for query: {query}")
     serper = GoogleSerperAPIWrapper()
+    serper.k = 4
     results = serper.results(query)
     list_results = results.get("organic", [])
     return list_results
 
-@tool
-def get_firecrawl_scrape(url: str):
-    """Use this to get the main content of a webpage."""
-    firecrawl = FireCrawlLoader(url=url, mode="scrape")
-    content = firecrawl.page_content
-    return content
+def run_firecrawl_scrape(url: str) -> Optional[dict]:
+    try:
+        results = firecrawl.scrape_url(url)
+        results["url"] = url # add 'url' to the results
+        return results
+    except Exception as e:
+        logger.error(f"Error scraping URL {url}: {e}")
+        return None
+
 
 async def async_get_outline(url: str, outline_response_structured_model: ChatOpenAI):
     """Asynchronously gets the outline for a single URL with error handling."""
     try:
-        inputs_for_outline_response = [("system", "Get the structured main content of the url provided."), ("user", url)]
+        scrape_results = run_firecrawl_scrape(url)
+        if not scrape_results or not scrape_results.get("markdown", None):
+            logger.error(f"No content found for URL: {url}")
+            return None
+        inputs_for_outline_response = [("system", "Get the structured main content of the url provided."), ("user", f"**URL:** {scrape_results['url']}\n\n**Scraped Content:**\n\n{scrape_results['markdown']}")]
         return await outline_response_structured_model.ainvoke(inputs_for_outline_response)
     except Exception as e:
         logger.error(f"Failed to process URL: {url}. Error: {e}")
         return None  # Return None for failed jobs
 
 async def main():
-    # Bind the tools to the model
-    tools = [get_serper_serp, get_firecrawl_scrape]
-    model_with_tools = model.bind_tools(tools)
-
     # Create models with structured output
-    serp_response_structured_model = model_with_tools.with_structured_output(SERPResponse)
-    outline_response_structured_model = model_with_tools.with_structured_output(OutlineResponse)
+    structured_serp_model = model.with_structured_output(SERPResponse)
+    structured_outline_model = model.with_structured_output(OutlineResponse)
     serp_analysis_response_structured_model = model.with_structured_output(SERPCommonalitiesResponse)
 
     # Run the SERP extraction
-    inputs_for_serp_response = [("system", "Get the SERP for a search query."), ("user", query)]
-    serp_response = await serp_response_structured_model.ainvoke(inputs_for_serp_response)
+    serp = get_serper_serp(query)
+    inputs_for_structured_serp = [("system", "Get the structured SERP"), ("user", str(serp))]
+    serp_response_structured = await structured_serp_model.ainvoke(inputs_for_structured_serp)
 
     # Run outline extraction for each URL concurrently
-    urls = [result.url for result in serp_response.results]
-    tasks = [async_get_outline(url, outline_response_structured_model) for url in urls]
+    urls = [result.url for result in serp_response_structured.results]
+    tasks = [async_get_outline(url, structured_outline_model) for url in urls]
     content_responses = await asyncio.gather(*tasks)
 
     # Run the SERP commonalities review for the successful content responses
-    successful_responses = [response for response in content_responses if response]
+    successful_responses = list(filter(None, content_responses)) # Filter out None responses
     markdown_of_successful_responses = [response.to_markdown for response in successful_responses]
     inputs_for_analysis = [("system", "Analyze the SERP for common topics, media type usage, content formats, and content depths."), ("user", str(markdown_of_successful_responses))]
     commonalities_response = await serp_analysis_response_structured_model.ainvoke(inputs_for_analysis)
 
     # create a markdown file with the analysis_response.to_markdown, followed by the markdown_of_successful_responses and the serp_response.to_markdown
-    final_markdown = f"# SERP Analysis\n\n{commonalities_response.to_markdown}\n\n{''.join(markdown_of_successful_responses)}\n\n{serp_response.to_markdown}"
+    final_markdown = f"# SERP Analysis\n\n{commonalities_response.to_markdown}\n\n{''.join(markdown_of_successful_responses)}\n\n{serp_response_structured.to_markdown}"
     
-    # write to local .md file
-    with open("serp_analysis.md", "w") as f:
-        f.write(final_markdown)
-        logger.info("Markdown file written successfully.")
-        
+    # write to local file named 'serp_analysis.md'
+    with open("serp_analysis.md", "w") as file:
+        file.write(final_markdown)
+    
     failed_count = len(content_responses) - len(successful_responses)
     logger.info(f'Number of failed jobs: {failed_count}')
 
