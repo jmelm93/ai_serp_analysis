@@ -1,5 +1,6 @@
 import asyncio
 import os 
+import datetime
 from loguru import logger
 from pydantic import BaseModel, Field
 from typing import List,Optional
@@ -18,12 +19,14 @@ query = "stock market basics"
 
 # Structured SERP Scraping
 class SERPItem(BaseModel):
+    """Context extracted from a single search result."""
     title: str = Field(name="title", description="The title of the search result.")
     snippet: str = Field(name="snippet", description="A brief snippet of the content.")
     url: str = Field(name="url", description="The URL of the search result.")
     domain: str = Field(name="domain", description="The domain of the search result.")
     
 class SERPResponse(BaseModel):
+    """A list of search results for a single query."""
     results: List[SERPItem] = Field(name="results", description="A list of search results.")
     
     @property
@@ -39,24 +42,29 @@ class SERPResponse(BaseModel):
 
 # Structured Page Scraping
 class SubSection(BaseModel):
+    """A subheading from the scraped page with an overview of the content."""
     subheading: str = Field(name="subheading", description="The subheading text.")
     overview: str = Field(name="overview", description="A concise overview of the content within the subheading.")
 
 class MediaTypes(BaseModel):
+    """A media type with a description based on the media types found on a page."""
     media_type: str = Field(name="media_type", description="The type of media included in the section (e.g., image, video, etc.).")
     descriptions: str = Field(name="descriptions", description="A brief description of the media content (e.g., 'calculator for a users tax bracket').")
 
 class Images(BaseModel):
+    """An image used on the page with an alt text description."""
     image_url: str = Field(name="image_url", description="The URL of the image.")
     alt_text: str = Field(name="alt_text", description="The alt text for the image.")
 
 class PageSection(BaseModel):
+    """A structured section of the page with key points, media inclusions, and subheadings."""
     section: str = Field(name="section", description="The main content header.")
     key_points: List[str] = Field(name="key_points", description="A list of key points from the section.")
     media_inclusions: List[MediaTypes] = Field(name="media_inclusions", description="A list of media types and descriptions used in the section.")
     subheadings: List[SubSection] = Field(name="subheadings", description="A list of subheadings with overviews.")
 
 class Outline(BaseModel):
+    """The structured outline of a page with keyword targets, page summary, page links, images, content depth, and content format."""
     url: str = Field(name="url", description="The URL of the page.")
     keyword_targets: List[str] = Field(name="keyword_targets", description="A list of SEO target keywords based on the content.")
     page_summary: List[PageSection] = Field(name="page_summary", description="Structured summary of the page content.")
@@ -66,6 +74,7 @@ class Outline(BaseModel):
     content_format: str = Field(name="content_format", description="The content format of the page (e.g., listicle, how-to guide).")
 
 class OutlineResponse(BaseModel):
+    """The response containing the structured outline of a page."""
     outline: Outline = Field(name="outline", description="Structured content outline.")
 
     @property
@@ -109,24 +118,29 @@ class OutlineResponse(BaseModel):
 
 # Structured SERP Analysis
 class CommonTopicExtraction(BaseModel):
+    """A common topic extracted from the SERP with related URLs and a summary of importance."""
     topic_name: str = Field(name="topic_name", description="The name of the common topic.")
     related_urls: List[str] = Field(name="related_urls", description="URLs of pages that discuss this topic.")
     summary_of_importance: str = Field(name="summary_of_importance", description="Summary of why this topic is important across the SERP.")
 
 class MediaTypeUsageAnalysis(BaseModel):
+    """Analysis of media type usage across the SERP with related URLs and insights."""
     media_type: str = Field(name="media_type", description="The type of media.")
     insight: str = Field(name="insight", description="Insight about the usage of this media type in the SERP.")
     related_urls: List[str] = Field(name="related_urls", description="URLs of pages that use this media type.")
 
 class ContentFormatAnalysis(BaseModel):
+    """Analysis of content formats across the SERP with related URLs."""
     format_name: str = Field(name="format_name", description="The name of the content format.")
     related_urls: List[str] = Field(name="related_urls", description="URLs of pages that use this content format.")
 
 class ContentDepthAnalysis(BaseModel):
+    """Analysis of content depths across the SERP with related URLs."""
     depth: str = Field(name="depth", description="The depth of the content.")
     related_urls: List[str] = Field(name="related_urls", description="URLs of pages that have this content depth.")
 
 class SERPCommonalitiesResponse(BaseModel):
+    """The response containing commonalities across the SERP."""
     common_topics: List[CommonTopicExtraction] = Field(name="common_topics", description="List of common topics extracted from SERP outlines.")
     media_type_usage: List[MediaTypeUsageAnalysis] = Field(name="media_type_usage", description="Analysis of media type usage across the SERP.")
     content_formats: List[ContentFormatAnalysis] = Field(name="content_formats", description="Summary of content formats across the SERP.")
@@ -183,25 +197,29 @@ def get_serper_serp(query: str):
     list_results = results.get("organic", [])
     return list_results
 
-def run_firecrawl_scrape(url: str) -> Optional[dict]:
+async def run_firecrawl_scrape(url: str) -> Optional[dict]:
     try:
-        results = firecrawl.scrape_url(url)
-        results["url"] = url # add 'url' to the results
+        results = await asyncio.to_thread(firecrawl.scrape_url, url)  # Run synchronously in a separate thread
+        results["url"] = url  # add 'url' to the results
         return results
     except Exception as e:
         logger.error(f"Error scraping URL {url}: {e}")
         return None
 
-
 async def async_get_outline(url: str, outline_response_structured_model: ChatOpenAI):
     """Asynchronously gets the outline for a single URL with error handling."""
     try:
         logger.info(f"Processing URL: {url}")
-        scrape_results = run_firecrawl_scrape(url)
+        scrape_results = await run_firecrawl_scrape(url)  # Await the async function
+        
         if not scrape_results or not scrape_results.get("markdown", None):
             logger.error(f"No content found for URL: {url}")
             return None
-        inputs_for_outline_response = [("system", "Get the structured main content of the url provided."), ("user", f"**URL:** {scrape_results['url']}\n\n**Scraped Content:**\n\n{scrape_results['markdown']}")]
+        
+        inputs_for_outline_response = [
+            ("system", "Get the structured main content of the url provided."),
+            ("user", f"**URL:** {scrape_results['url']}\n\n**Scraped Content:**\n\n{scrape_results['markdown']}")
+        ]
         return await outline_response_structured_model.ainvoke(inputs_for_outline_response)
     except Exception as e:
         logger.error(f"Failed to process URL: {url}. Error: {e}")
@@ -224,17 +242,21 @@ async def main():
     content_responses = await asyncio.gather(*tasks)
 
     # Run the SERP commonalities review for the successful content responses
-    successful_responses = list(filter(None, content_responses)) # Filter out None responses
+    successful_responses = list(filter(None, content_responses))  # Filter out None responses
     markdown_of_successful_responses = [response.to_markdown for response in successful_responses]
-    inputs_for_analysis = [("system", "Analyze the SERP for common topics, media type usage, content formats, and content depths."), ("user", str(markdown_of_successful_responses))]
+    inputs_for_analysis = [
+        ("system", "Analyze the SERP for common topics, media type usage, content formats, and content depths."),
+        ("user", str(markdown_of_successful_responses))
+    ]
     logger.info(f"Analyzing {len(successful_responses)} successful content responses.")
     commonalities_response = await serp_analysis_response_structured_model.ainvoke(inputs_for_analysis)
 
-    # create a markdown file with the analysis_response.to_markdown, followed by the markdown_of_successful_responses and the serp_response.to_markdown
-    final_markdown = f"# SERP Analysis\n\n{commonalities_response.to_markdown}\n\n{''.join(markdown_of_successful_responses)}\n\n{serp_response_structured.to_markdown}"
+    # Create a markdown file with the analysis_response.to_markdown, followed by the markdown_of_successful_responses and the serp_response.to_markdown
+    final_markdown = f"# SERP Analysis for Query: {query}\n\n{commonalities_response.to_markdown}\n\n{''.join(markdown_of_successful_responses)}\n\n{serp_response_structured.to_markdown}"
     
-    # write to local file named 'serp_analysis.md'
-    with open("serp_analysis.md", "w") as file:
+    # Write to local file named 'serp_analysis_{query}_{timestamp}.md'
+    filename = f"serp_analysis_{query.lower().replace(' ', '_')}_{'_'.join(datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S').split())}.md"
+    with open(filename, "w") as file:
         file.write(final_markdown)
     
     failed_count = len(content_responses) - len(successful_responses)
