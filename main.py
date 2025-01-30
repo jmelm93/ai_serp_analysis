@@ -14,7 +14,7 @@ load_dotenv()
 firecrawl = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
 
 model = ChatOpenAI(model="gpt-4o")
-query = "how to walk a dog"
+query = "stock market basics"
 
 # Structured SERP Scraping
 class SERPItem(BaseModel):
@@ -196,6 +196,7 @@ def run_firecrawl_scrape(url: str) -> Optional[dict]:
 async def async_get_outline(url: str, outline_response_structured_model: ChatOpenAI):
     """Asynchronously gets the outline for a single URL with error handling."""
     try:
+        logger.info(f"Processing URL: {url}")
         scrape_results = run_firecrawl_scrape(url)
         if not scrape_results or not scrape_results.get("markdown", None):
             logger.error(f"No content found for URL: {url}")
@@ -226,6 +227,7 @@ async def main():
     successful_responses = list(filter(None, content_responses)) # Filter out None responses
     markdown_of_successful_responses = [response.to_markdown for response in successful_responses]
     inputs_for_analysis = [("system", "Analyze the SERP for common topics, media type usage, content formats, and content depths."), ("user", str(markdown_of_successful_responses))]
+    logger.info(f"Analyzing {len(successful_responses)} successful content responses.")
     commonalities_response = await serp_analysis_response_structured_model.ainvoke(inputs_for_analysis)
 
     # create a markdown file with the analysis_response.to_markdown, followed by the markdown_of_successful_responses and the serp_response.to_markdown
